@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+  RoleFullAccessDynamoDB:
+    Type: String
+    Default: arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+  RoleFullAccessCloudWatch:
+    Type: String
+    Default: arn:aws:iam::aws:policy/CloudWatchFullAccess
+  ClientePath:
+    Type: String
+    Default: cliente
+  SucursalPath:
+    Type: String
+    Default: sucursal
+Resources:
+  RoleFuncionLambda:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - !Ref RoleFullAccessDynamoDB
+        - !Ref RoleFullAccessCloudWatch
+  APITienda:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: APITienda
+      StageName: !Ref Stage
+
+  RegistrarClienteLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: |
+          import json
+          import boto3 
+          from boto3.dynamodb.conditions import Key
+
+          dynamodb = boto3.resource("dynamodb")
+          table = dynamodb.Table("Tiendas")
+
+          def lambda_handler(event, context):
+            data = json.loads(event["body"])
+            idCliente= data["id"]
+            nombre = data["nombre"]
+            apellido = data["apellido"]
+            table.put_item(Item={
+              "Id": "Cliente",
+              "Filtro":"Id#"+idCliente,
+              "Nombre":nombre,
+              "Apellido":apellido
+            })
+            return {
+              'statusCode': 200,
+              'body': json.dumps(idCliente)
+            }
+      Handler: index.lambda_handler
+      Runtime: python3.7
+      PackageType: Zip
+      FunctionName: RegistrarCliente
+      Role: !GetAtt RoleFuncionLambda.Arn
+      Events:
+        RegistrarCliente:
+          Type: Api
+          Properties:
+            RestApiId: !Ref APITienda
+            Path: /cliente
+            Method: POST
+  ObtenerClienteLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: |
+          import json
+          import boto3 
+          from boto3.dynamodb.conditions import Key
+
+          dynamodb = boto3.resource("dynamodb")
+          table = dynamodb.Table("Tiendas")
+
+          def lambda_handler(event, context):
+            
+            id = event["queryStringParameters"]["id"]
+            cliente = table.query(KeyConditionExpression=Key('Id').eq("Cliente") & Key('Filtro').eq('Id#'+id),                   
+                                ProjectionExpression="Id,Filtro,Nombre,Apellido")
+            return {
+              'statusCode': 200,
+              'body': json.dumps(cliente)
+            }
+      Handler: index.lambda_handler
+      Runtime: python3.7
+      PackageType: Zip
+      FunctionName: ObtenerCliente
+      Role: !GetAtt RoleFuncionLambda.Arn
+      Events:
+        ObtenerClientes:
+          Type: Api
+          Properties:
+            RestApiId: !Ref APITienda
+            Path: /cliente
+            Method: GET
+  SucursalesLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: |
+          import json
+          import boto3 
+          from boto3.dynamodb.conditions import Key
+
+          dynamodb = boto3.resource("dynamodb")
+          table = dynamodb.Table("Tiendas")
+
+          def lambda_handler(event, context):
+            
+            sucursales = table.query(KeyConditionExpression=Key('Id').eq("Sucursal"),                   
+                                  ProjectionExpression="Id,Filtro,Direccion")
+            print(sucursales["Items"])
+            return {
+              'statusCode': 200,
+              'body': json.dumps(sucursales)
+            }
+      Handler: index.lambda_handler
+      Runtime: python3.7
+      PackageType: Zip
+      FunctionName: ObtenerSucursales
+      Role: !GetAtt RoleFuncionLambda.Arn
+      Events:
+        ObtenerSucursales:
+          Type: Api
+          Properties:
+            RestApiId: !Ref APITienda
+            Path: /sucursal
+            Method: GET
+  Tabla:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Tiendas
+      BillingMode: PROVISIONED
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      AttributeDefinitions:
+        -
+          AttributeName: "Id"
+          AttributeType: "S"
+        -
+          AttributeName: "Filtro"
+          AttributeType: "S"
+      KeySchema:
+        -
+          AttributeName: "Id"
+          KeyType: "HASH"
+        -
+          AttributeName: "Filtro"
+          KeyType: "RANGE"
+Outputs:
+  ApiEndPoint:
+    Description: "EndPoint Api"
+    Value: !Sub "https://${APITienda}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+  ClienteEndPoint:
+    Description: "EndPoint Metodos Cliente"
+    Value: !Sub "https://${APITienda}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/${ClientePath}"
+  SucursalEndPoint:
+    Description: "EndPoint Metodo Sucursal"
+    Value: !Sub "https://${APITienda}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/${SucursalPath}"

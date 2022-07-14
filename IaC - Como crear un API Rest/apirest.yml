@@ -1,0 +1,250 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  MetodoGET:
+    Type: String
+    Default: GET
+  MetodoPOST:
+    Type: String
+    Default: POST
+  ClientePath:
+    Type: String
+    Default: cliente
+  SucursalPath:
+    Type: String
+    Default: sucursal
+  Stage:
+    Type: String
+    Default: dev
+  RoleFullAccessDynamoDB:
+    Type: String
+    Default: arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+  RoleFullAccessCloudWatch:
+    Type: String
+    Default: arn:aws:iam::aws:policy/CloudWatchFullAccess
+
+Resources:
+  RoleFuncionLambda:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - !Ref RoleFullAccessDynamoDB
+        - !Ref RoleFullAccessCloudWatch
+  APITienda:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: APITienda
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+  RecursoCliente:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref  APITienda
+      PathPart: !Ref ClientePath
+      ParentId: !GetAtt APITienda.RootResourceId
+  RecursoSucursal:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref  APITienda
+      PathPart: !Ref SucursalPath
+      ParentId: !GetAtt APITienda.RootResourceId
+  MetodoObtenerClientes:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: !Ref MetodoGET
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ObtenerClienteLambda.Arn
+      ResourceId: !GetAtt RecursoCliente.ResourceId
+      RestApiId: !Ref APITienda
+  MetodoRegistrarCliente:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: !Ref MetodoPOST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt RegistrarClienteLambda.Arn
+      ResourceId: !GetAtt RecursoCliente.ResourceId
+      RestApiId: !Ref APITienda
+  MetodoObtenerSucursales:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: !Ref MetodoGET
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt ObtenerSucursalesLambda.Arn
+      ResourceId: !GetAtt RecursoSucursal.ResourceId
+      RestApiId: !Ref APITienda
+  Despliegue:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - MetodoObtenerClientes
+      - MetodoRegistrarCliente
+      - MetodoObtenerSucursales
+    Properties: 
+      RestApiId: !Ref APITienda
+      StageName: !Ref Stage
+  RegistrarClienteLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "Agrega clientes a la base de datos"
+      FunctionName: "RegistarCliente"
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Runtime: python3.8
+      Timeout: 3
+      Code: 
+        ZipFile: |
+          import json
+          import boto3 
+          from boto3.dynamodb.conditions import Key
+
+          dynamodb = boto3.resource("dynamodb")
+          table = dynamodb.Table("Tiendas")
+
+          def lambda_handler(event, context):
+            data = json.loads(event["body"])
+            idCliente= data["id"]
+            nombre = data["nombre"]
+            apellido = data["apellido"]
+            table.put_item(Item={
+              "Id": "Cliente",
+              "Filtro":"Id#"+idCliente,
+              "Nombre":nombre,
+              "Apellido":apellido
+            })
+            return {
+              'statusCode': 200,
+              'body': json.dumps(idCliente)
+            }
+      Role: !GetAtt  RoleFuncionLambda.Arn
+  ObtenerClienteLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "Obtiene los clientes"
+      FunctionName: "ObtenerCliente"
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Runtime: python3.8
+      Timeout: 3
+      Code: 
+        ZipFile: |
+          import json
+          import boto3 
+          from boto3.dynamodb.conditions import Key
+
+          dynamodb = boto3.resource("dynamodb")
+          table = dynamodb.Table("Tiendas")
+
+          def lambda_handler(event, context):
+            
+            id = event["queryStringParameters"]["id"]
+            cliente = table.query(KeyConditionExpression=Key('Id').eq("Cliente") & Key('Filtro').eq('Id#'+id),                   
+                                ProjectionExpression="Id,Filtro,Nombre,Apellido")
+            return {
+              'statusCode': 200,
+              'body': json.dumps(cliente)
+            }
+      Role: !GetAtt  RoleFuncionLambda.Arn
+  ObtenerSucursalesLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "Obtiene las sucursales"
+      FunctionName: "ObtenerSucursales"
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Runtime: python3.8
+      Timeout: 3
+      Code: 
+        ZipFile: |
+          import json
+          import boto3 
+          from boto3.dynamodb.conditions import Key
+
+          dynamodb = boto3.resource("dynamodb")
+          table = dynamodb.Table("Tiendas")
+
+          def lambda_handler(event, context):
+            
+            sucursales = table.query(KeyConditionExpression=Key('Id').eq("Sucursal"),                   
+                                  ProjectionExpression="Id,Filtro,Direccion")
+            return {
+              'statusCode': 200,
+              'body': json.dumps(sucursales)
+            }
+      Role: !GetAtt  RoleFuncionLambda.Arn
+  PermisoObtenerClientes:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt ObtenerClienteLambda.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APITienda}/*/${MetodoGET}/${ClientePath}"
+  PermisoRegistrarCliente:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref RegistrarClienteLambda
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APITienda}/*/${MetodoPOST}/${ClientePath}"
+  PermisoObtenerSucursales:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref ObtenerSucursalesLambda
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APITienda}/*/${MetodoGET}/${SucursalPath}"
+  Tabla:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Tiendas
+      BillingMode: PROVISIONED
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      AttributeDefinitions:
+        -
+          AttributeName: "Id"
+          AttributeType: "S"
+        -
+          AttributeName: "Filtro"
+          AttributeType: "S"
+      KeySchema:
+        -
+          AttributeName: "Id"
+          KeyType: "HASH"
+        -
+          AttributeName: "Filtro"
+          KeyType: "RANGE"
+Outputs:
+  ApiEndPoint:
+    Description: "EndPoint Api"
+    Value: !Sub "https://${APITienda}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+  ClienteEndPoint:
+    Description: "EndPoint Metodos Cliente"
+    Value: !Sub "https://${APITienda}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/${ClientePath}"
+  SucursalEndPoint:
+    Description: "EndPoint Metodo Sucursal"
+    Value: !Sub "https://${APITienda}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/${SucursalPath}"
