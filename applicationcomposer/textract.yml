@@ -1,0 +1,148 @@
+Resources:
+  lambdatextract:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: lambdatextract
+      InlineCode: |
+        import boto3
+        import urllib
+
+        textract = boto3.client('textract')
+        dynamodb = boto3.client('dynamodb')
+
+        class Factura:
+
+            def __init__(self, idFactura="", fechaFactura="", valorAPagar="",nombreArchivo=""):
+                self.idFactura = idFactura
+                self.fechaFactura = fechaFactura
+                self.valorAPagar = valorAPagar
+                self.nombreArchivo = nombreArchivo
+
+            def getNombreArchivo(self):
+                return self.nombreArchivo
+            
+            def getIdFactura(self):
+                return self.idFactura
+
+            def getFechaFactura(self):
+                return self.fechaFactura
+
+            def getValorAPagar(self):
+                return self.valorAPagar
+
+            def setIdFactura(self, idFactura):
+                self.idFactura = idFactura
+
+            def setFechaFactura(self, fechaFactura):
+                self.fechaFactura = fechaFactura
+
+            def setValorAPagar(self, valorAPagar):
+                self.valorAPagar = valorAPagar
+                
+            def setNombreArchivo(self, nombreArchivo):
+                self.nombreArchivo = nombreArchivo
+
+        def lambda_handler(event, context):
+            bucket = event['Records'][0]['s3']['bucket']['name']
+            nombreObjeto = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+
+            response = textract.analyze_document(
+                Document={
+                    'S3Object': {
+                        'Bucket': bucket,
+                        'Name': nombreObjeto
+                    }
+                },
+                FeatureTypes=["QUERIES"],
+                QueriesConfig={
+                    "Queries": [{
+                        "Text": "What is the Fecha vencimiento y pago",
+                        "Alias": "Fecha de pago"
+                    },
+                        {
+                        "Text": "What is the Total a pagar",
+                        "Alias": "Valor a pagar"
+                    },
+                        {
+                        "Text": "What is the BEC",
+                        "Alias": "Numero de Factura"
+                    }]
+                })
+            blocks = response['Blocks']
+            i = 0
+            factura = Factura()
+            factura.setNombreArchivo(nombreObjeto)
+            for block in blocks:
+                if block['BlockType'] == "QUERY_RESULT":
+                    if float(block['Confidence']) >= 60:
+                        if i == 0:
+                            factura.setFechaFactura(block["Text"])
+                        elif i == 1:
+                            factura.setValorAPagar(block["Text"])
+                        elif i == 2:
+                            factura.setIdFactura(block["Text"])
+                    i += 1
+                    print(block)
+            result = dynamodb.put_item(
+                TableName='datosfacturas',
+                Item={
+                    'PK': {'S': factura.getIdFactura()},
+                    'FechaPago': {'S': factura.getFechaFactura()},
+                    'ValorPago': {'S': factura.getValorAPagar()},
+                    'NombreArchivo': {'S': factura.getNombreArchivo()}
+                },
+                ConditionExpression="attribute_not_exists(PK)"
+            )
+      Handler: index.lambda_handler
+      Runtime: python3.8
+      PackageType: Zip
+      MemorySize: 256
+      Timeout: 10
+      Tracing: Active
+      Events:
+        bucketexttrack2022:
+          Type: S3
+          Properties:
+            Bucket: !Ref bucketexttrack2022
+            Events:
+              - s3:ObjectCreated:*
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref datosfacturas
+          TABLE_ARN: !GetAtt datosfacturas.Arn
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref datosfacturas
+        - TextractPolicy: {}
+        - CloudWatchPutMetricPolicy: {}
+        - S3FullAccessPolicy: 
+            BucketName:  !Sub ${AWS::StackName}-bucketext-${AWS::AccountId}
+      Layers:
+        - arn:aws:lambda:us-east-1:385033107168:layer:boto3-mylayer:2
+  lambdatextractLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${lambdatextract}
+  datosfacturas:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: datosfacturas
+      PrimaryKey:
+        Name: PK
+        Type: String
+  bucketexttrack2022:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-bucketext-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: alias/aws/s3
+      PublicAccessBlockConfiguration:
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+Transform: AWS::Serverless-2016-10-31
